@@ -1,117 +1,50 @@
 #include <Wire.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
+#include <math.h>
 
-Adafruit_MPU6050 mpu;
+#define MPU 0x68  // Dirección I2C del MPU6050
+#define RES_ACC 32768.0 / 2  // Factor de conversión de la aceleración: 16 bits mapeados a 2g
 
-// Variables para calibración
-float accX_offset = 0;
-float accY_offset = 0;
-float accZ_offset = 0;
-float gyroX_offset = 0;
-float gyroY_offset = 0;
-float gyroZ_offset = 0;
-
-// Tiempo
-unsigned long lastTime = 0;
-float deltaTime = 0;
-
-// Ángulos calculados por el filtro complementario
-float roll = 0;
-float pitch = 0;
+int16_t Acc_x, Acc_y, Acc_z;
+float Accx, Accy, Accz;
+float roll_acc, pitch_acc;
 
 void setup() {
-  Wire.begin();
-  Serial.begin(115200);
-
-  if (!mpu.begin()) {
-    Serial.println("Failed to find MPU6050 chip");
-    while (1) {
-      delay(10);
-    }
-  }
-
-  mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
-  mpu.setGyroRange(MPU6050_RANGE_2000_DEG);
-
-  calibrateSensors();
-  lastTime = millis(); // Inicializar la última vez que se tomó una lectura
+  Serial.begin(115200);  // Inicializamos la conexión serial
+  Wire.begin();  // Inicializamos el bus I2C
+  
+  // Configuramos el MPU6050
+  Wire.beginTransmission(MPU);
+  Wire.write(0x6B);  // Dirección del registro de power management
+  Wire.write(0x00);  // Valor para despertar el sensor
+  Wire.endTransmission(true);
 }
 
 void loop() {
-  sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
+  // Leer los valores del acelerómetro
+  Wire.beginTransmission(MPU);
+  Wire.write(0x3B);  // Dirección del primer registro del acelerómetro
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU, 6, true);  // Solicitamos los 6 bytes del acelerómetro
+  
+  Acc_x = Wire.read() << 8 | Wire.read();  // Combinamos los bytes para cada eje
+  Acc_y = Wire.read() << 8 | Wire.read();
+  Acc_z = Wire.read() << 8 | Wire.read();
+  
+  // Convertimos los valores a unidades estándar (g)
+  Accx = Acc_x / RES_ACC;
+  Accy = Acc_y / RES_ACC;
+  Accz = Acc_z / RES_ACC;
 
-  // Aplicar los offsets de calibración
-  a.acceleration.x -= accX_offset;
-  a.acceleration.y -= accY_offset;
-  a.acceleration.z -= accZ_offset;
-  g.gyro.x -= gyroX_offset;
-  g.gyro.y -= gyroY_offset;
-  g.gyro.z -= gyroZ_offset;
+  // Cálculo de ángulos usando aceleración
+  roll_acc = atan2(Accy, Accz) * 180 / M_PI;
+  pitch_acc = atan2(-Accx, sqrt(Accy * Accy + Accz * Accz)) * 180 / M_PI;
 
-  // Calcular deltaTime
-  unsigned long currentTime = millis();
-  deltaTime = (currentTime - lastTime) / 1000.0; // Convertir a segundos
-  lastTime = currentTime;
+  // Impresión de valores
+  Serial.print("Roll: "); Serial.print(roll_acc);
+  Serial.print(" Pitch: "); Serial.print(pitch_acc);
+  Serial.print(" Accx: "); Serial.print(Accx);
+  Serial.print(" Accy: "); Serial.print(Accy);
+  Serial.print(" Accz: "); Serial.println(Accz);
 
-  // Estimación de ángulos usando giroscopio
-  float gyroRoll = roll + g.gyro.x * deltaTime; // Integra la tasa de giro en el tiempo
-  float gyroPitch = pitch + g.gyro.y * deltaTime; // Integra la tasa de giro en el tiempo
-
-  // Estimación de ángulos usando acelerómetro
-  float accRoll = atan2(a.acceleration.y, a.acceleration.z) * 180 / M_PI;
-  float accPitch = atan2(-a.acceleration.x, sqrt(a.acceleration.y * a.acceleration.y + a.acceleration.z * a.acceleration.z)) * 180 / M_PI;
-
-  // Filtro complementario
-  roll = gyroRoll * 0.95 + accRoll * 0.05;
-  pitch = gyroPitch * 0.95 + accPitch * 0.05;
-
-  // Imprimir los valores de aceleración, giroscopio, roll y pitch
-  Serial.print("AccX: "); Serial.print(a.acceleration.x);
-  Serial.print(" AccY: "); Serial.print(a.acceleration.y);
-  Serial.print(" AccZ: "); Serial.println(a.acceleration.z);
-  Serial.print("GyroX: "); Serial.print(g.gyro.x);
-  Serial.print(" GyroY: "); Serial.print(g.gyro.y);
-  Serial.print(" GyroZ: "); Serial.println(g.gyro.z);
-  Serial.print("Roll: "); Serial.print(roll);
-  Serial.print(" Pitch: "); Serial.println(pitch);
-
-  delay(100);
-}
-
-void calibrateSensors() {
-  const int numReadings = 1000;
-
-  float accX_sum = 0;
-  float accY_sum = 0;
-  float accZ_sum = 0;
-  float gyroX_sum = 0;
-  float gyroY_sum = 0;
-  float gyroZ_sum = 0;
-
-  Serial.println("Calibrando sensores, por favor espere...");
-
-  for (int i = 0; i < numReadings; i++) {
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
-
-    accX_sum += a.acceleration.x;
-    accY_sum += a.acceleration.y;
-    accZ_sum += a.acceleration.z;
-    gyroX_sum += g.gyro.x;
-    gyroY_sum += g.gyro.y;
-    gyroZ_sum += g.gyro.z;
-
-    delay(10); // Pequeña pausa entre muestras
-  }
-  // Calcular promedios y establecer los offsets
-  accX_offset = accX_sum / numReadings;
-  accY_offset = accY_sum / numReadings;
-  accZ_offset = accZ_sum / numReadings - 9.81; // Ajuste para la gravedad
-  gyroX_offset = gyroX_sum / numReadings;
-  gyroY_offset = gyroY_sum / numReadings;
-  gyroZ_offset = gyroZ_sum / numReadings;
-
-  Serial.println("Calibración completa");
+  delay(20);  // Pequeña pausa
 }
